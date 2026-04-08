@@ -229,11 +229,9 @@ function openBrowser(url) {
 
 async function main() {
   const { verifier, challenge } = generatePKCE();
-  const state = crypto.randomBytes(16).toString("hex");
 
-  const authURL = buildAuthURL(challenge, state);
-  // Patch the state to include the real verifier (buildAuthURL puts it in state for the callback)
-  const statePayload = { verifier, projectId: "", _state: state };
+  const authURL = buildAuthURL(challenge, "");
+  const statePayload = { verifier, projectId: "" };
   const stateParam = Buffer.from(JSON.stringify(statePayload)).toString("base64");
   const fullURL = authURL.replace(/state=[^&]+/, `state=${encodeURIComponent(stateParam)}`);
 
@@ -241,69 +239,89 @@ async function main() {
   console.log("  =======================\n");
 
   const opened = openBrowser(fullURL);
+
+  let code = null;
+
+  // Try callback server if browser opened
   if (opened) {
     console.log("  Browser opened. Authorize with your Google account.");
-  } else {
-    console.log("  Open this URL in your browser:\n");
-    console.log(`  ${fullURL}\n`);
-  }
+    console.log("  Waiting for callback on localhost:51121 ...\n");
 
-  console.log("  Waiting for callback on localhost:51121 ...\n");
+    code = await new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        server.close();
+        resolve(null);
+      }, 30_000);
 
-  const code = await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      server.close();
-      reject(new Error("Timed out waiting for OAuth callback (120s)"));
-    }, 120_000);
+      const server = http.createServer((req, res) => {
+        const url = new URL(req.url, `http://localhost:${PORT}`);
+        if (url.pathname !== "/oauth-callback") {
+          res.writeHead(404);
+          res.end("Not found");
+          return;
+        }
 
-    const server = http.createServer((req, res) => {
-      const url = new URL(req.url, `http://localhost:${PORT}`);
-      if (url.pathname !== "/oauth-callback") {
-        res.writeHead(404);
-        res.end("Not found");
-        return;
-      }
+        const c = url.searchParams.get("code");
+        const error = url.searchParams.get("error");
 
-      const code = url.searchParams.get("code");
-      const error = url.searchParams.get("error");
+        if (error) {
+          res.writeHead(200, { "Content-Type": "text/html" });
+          res.end("<h1>Authorization failed</h1><p>You can close this tab.</p>");
+          clearTimeout(timeout);
+          server.close();
+          resolve(null);
+          return;
+        }
 
-      if (error) {
+        if (!c) {
+          res.writeHead(400, { "Content-Type": "text/html" });
+          res.end("<h1>Missing code</h1>");
+          return;
+        }
+
         res.writeHead(200, { "Content-Type": "text/html" });
-        res.end("<h1>Authorization failed</h1><p>You can close this tab.</p>");
+        res.end("<h1>Authorization successful!</h1><p>You can close this tab and return to the terminal.</p>");
         clearTimeout(timeout);
         server.close();
-        reject(new Error(`OAuth error: ${error}`));
-        return;
-      }
+        resolve(c);
+      });
 
-      if (!code) {
-        res.writeHead(400, { "Content-Type": "text/html" });
-        res.end("<h1>Missing code</h1>");
-        return;
-      }
-
-      res.writeHead(200, { "Content-Type": "text/html" });
-      res.end("<h1>Authorization successful!</h1><p>You can close this tab and return to the terminal.</p>");
-      clearTimeout(timeout);
-      server.close();
-      resolve(code);
+      server.listen(PORT).on("error", () => {
+        clearTimeout(timeout);
+        resolve(null);
+      });
     });
+  }
 
-    server.listen(PORT, () => {
-      console.log(`  Listening on http://localhost:${PORT} ...\n`);
-    });
+  // Fallback: manual paste
+  if (!code) {
+    console.log("\n  No browser or callback not received.");
+    console.log("  Open this URL on any device (phone, another computer, etc.):\n");
+    console.log(`  ${fullURL}\n`);
+    console.log("  After authorizing, the page will say 'connection refused'.");
+    console.log("  Copy the full URL from the address bar and paste it below.\n");
 
-    server.on("error", (err) => {
-      if (err.code === "EADDRINUSE") {
-        console.error(`  Port ${PORT} is already in use. Kill the process using it and retry.`);
-        console.error(`  Run: lsof -i :${PORT}  or  fuser -k ${PORT}/tcp`);
-      } else {
-        console.error(`  Server error: ${err.message}`);
-      }
-      clearTimeout(timeout);
-      reject(err);
+    const readline = await import("node:readline");
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+    code = await new Promise((resolve) => {
+      rl.question("  Paste the callback URL: ", (answer) => {
+        rl.close();
+        try {
+          const callbackUrl = new URL(answer.trim());
+          const c = callbackUrl.searchParams.get("code");
+          if (!c) {
+            console.error("\n  Error: No 'code' parameter found in the URL.");
+            process.exit(1);
+          }
+          resolve(c);
+        } catch {
+          console.error("\n  Error: Invalid URL. Make sure you paste the full URL from the browser.");
+          process.exit(1);
+        }
+      });
     });
-  });
+  }
 
   console.log("  Exchanging code for tokens...");
   const tokens = await exchangeCode(code, verifier);
