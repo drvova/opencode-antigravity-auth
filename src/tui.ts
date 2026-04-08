@@ -182,6 +182,7 @@ type LoadBalancerSettings = {
   scheduling_mode: "cache_first" | "balance" | "performance_first";
   pid_offset_enabled: boolean;
   switch_on_first_rate_limit: boolean;
+  max_rate_limit_wait_seconds: number;
   max_cache_first_wait_seconds: number;
   default_retry_after_seconds: number;
   max_backoff_seconds: number;
@@ -196,6 +197,7 @@ const SETTINGS_KEYS: Array<keyof LoadBalancerSettings> = [
   "scheduling_mode",
   "pid_offset_enabled",
   "switch_on_first_rate_limit",
+  "max_rate_limit_wait_seconds",
   "max_cache_first_wait_seconds",
   "default_retry_after_seconds",
   "max_backoff_seconds",
@@ -211,6 +213,7 @@ function getDefaultLoadBalancerSettings(): LoadBalancerSettings {
     scheduling_mode: DEFAULT_CONFIG.scheduling_mode,
     pid_offset_enabled: DEFAULT_CONFIG.pid_offset_enabled,
     switch_on_first_rate_limit: DEFAULT_CONFIG.switch_on_first_rate_limit,
+    max_rate_limit_wait_seconds: DEFAULT_CONFIG.max_rate_limit_wait_seconds,
     max_cache_first_wait_seconds: DEFAULT_CONFIG.max_cache_first_wait_seconds,
     default_retry_after_seconds: DEFAULT_CONFIG.default_retry_after_seconds,
     max_backoff_seconds: DEFAULT_CONFIG.max_backoff_seconds,
@@ -433,6 +436,12 @@ function showLoadBalancerSettingsDialog(api: TuiApi): void {
       description: "hybrid + cache_first + pid_offset_disabled",
     },
     {
+      title: "Preset: Rate-limit hardened",
+      value: "preset:rate-limit-hardened",
+      category: "Presets",
+      description: "cache-friendly + stronger retry/backoff + soft-quota hardening",
+    },
+    {
       title: `Strategy: ${settings.account_selection_strategy}`,
       value: "set:strategy",
       category: "Core",
@@ -460,6 +469,11 @@ function showLoadBalancerSettingsDialog(api: TuiApi): void {
     {
       title: `Max cache wait (s): ${settings.max_cache_first_wait_seconds}`,
       value: "set:max_cache_first_wait_seconds",
+      category: "Timing",
+    },
+    {
+      title: `Max total rate-limit wait (s): ${settings.max_rate_limit_wait_seconds}`,
+      value: "set:max_rate_limit_wait_seconds",
       category: "Timing",
     },
     {
@@ -535,6 +549,10 @@ function showLoadBalancerSettingsDialog(api: TuiApi): void {
 
         if (item.value.startsWith("set:")) {
           const key = item.value.slice("set:".length) as keyof LoadBalancerSettings;
+          if (key === "max_rate_limit_wait_seconds") {
+            showNumericPrompt(api, "Max total rate-limit wait seconds", settings.max_rate_limit_wait_seconds, 0, 3600, () => showLoadBalancerSettingsDialog(api), key);
+            return;
+          }
           if (key === "max_cache_first_wait_seconds") {
             showNumericPrompt(api, "Max cache wait seconds", settings.max_cache_first_wait_seconds, 5, 300, () => showLoadBalancerSettingsDialog(api), key);
             return;
@@ -571,6 +589,7 @@ function showLoadBalancerSettingsDialog(api: TuiApi): void {
               `pid_offset_enabled=${settings.pid_offset_enabled}`,
               `switch_on_first_rate_limit=${settings.switch_on_first_rate_limit}`,
               `cli_first=${settings.cli_first}`,
+              `max_rate_limit_wait_seconds=${settings.max_rate_limit_wait_seconds}`,
               `max_cache_first_wait_seconds=${settings.max_cache_first_wait_seconds}`,
               `default_retry_after_seconds=${settings.default_retry_after_seconds}`,
               `max_backoff_seconds=${settings.max_backoff_seconds}`,
@@ -605,6 +624,22 @@ function showLoadBalancerSettingsDialog(api: TuiApi): void {
               account_selection_strategy: "hybrid",
               scheduling_mode: "cache_first",
               pid_offset_enabled: false,
+            };
+          }
+          if (item.value === "preset:rate-limit-hardened") {
+            patch = {
+              account_selection_strategy: "hybrid",
+              scheduling_mode: "cache_first",
+              pid_offset_enabled: false,
+              switch_on_first_rate_limit: true,
+              max_rate_limit_wait_seconds: 900,
+              max_cache_first_wait_seconds: 60,
+              default_retry_after_seconds: 30,
+              max_backoff_seconds: 90,
+              request_jitter_max_ms: 400,
+              soft_quota_threshold_percent: 100,
+              quota_refresh_interval_minutes: 2,
+              cli_first: true,
             };
           }
           void writeSettingsPatch(patch).then((result) => {
