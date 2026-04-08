@@ -3067,6 +3067,23 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 console.warn(
                   `[opencode-antigravity-auth] Skipping failed account ${accounts.length + 1}: ${result.error}`,
                 );
+
+                // Do not force users to restart the whole flow when adding another
+                // account fails midway. Allow immediate retry in the same session.
+                let currentAccountCount = accounts.length;
+                try {
+                  const currentStorage = await loadAccounts();
+                  if (currentStorage) {
+                    currentAccountCount = currentStorage.accounts.length;
+                  }
+                } catch {
+                  // Fall back to in-memory count
+                }
+
+                const retryAddAnother = await promptAddAnotherAccount(currentAccountCount);
+                if (retryAddAnother) {
+                  continue;
+                }
                 break;
               }
 
