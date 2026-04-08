@@ -8,6 +8,8 @@
 
 Enable Opencode to authenticate against **Antigravity** (Google's IDE) via OAuth so you can use Antigravity rate limits and access models like `gemini-3.1-pro` and `claude-opus-4-6-thinking` with your Google credentials.
 
+> **Fork of [NoeFabris/opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth)** with fixes for Bun/Linux compatibility.
+
 ## What You Get
 
 - **Claude Opus 4.6, Sonnet 4.6** and **Gemini 3.1 Pro/Flash** via Google OAuth
@@ -46,7 +48,7 @@ Enable Opencode to authenticate against **Antigravity** (Google's IDE) via OAuth
 Paste this into any LLM agent (Claude Code, OpenCode, Cursor, etc.):
 
 ```
-Install the opencode-antigravity-auth plugin and add the Antigravity model definitions to ~/.config/opencode/opencode.json by following: https://raw.githubusercontent.com/NoeFabris/opencode-antigravity-auth/dev/README.md
+Install the opencode-antigravity-auth plugin and add the Antigravity model definitions to ~/.config/opencode/opencode.json by following: https://raw.githubusercontent.com/drvova/opencode-antigravity-auth/main/README.md
 ```
 
 **Option B: Manual setup**
@@ -67,6 +69,8 @@ Install the opencode-antigravity-auth plugin and add the Antigravity model defin
    opencode auth login
    ```
 
+   > **Linux / Bun users**: If `opencode auth login` doesn't show the Antigravity OAuth option, you need to manually exchange an OAuth code. See [Manual OAuth for Linux](#manual-oauth-for-linux) below.
+
 3. **Add models** — choose one:
    - Run `opencode auth login` → Google → OAuth with Google (Antigravity) → select **"Configure models in opencode.json"** (auto-configures all models)
    - Or manually copy the [full configuration](#models) below
@@ -76,6 +80,43 @@ Install the opencode-antigravity-auth plugin and add the Antigravity model defin
    ```bash
    opencode run "Hello" --model=google/antigravity-claude-opus-4-6-thinking --variant=max
    ```
+
+</details>
+
+<details>
+<summary><b>Manual OAuth for Linux</b></summary>
+
+If the Antigravity OAuth callback fails (e.g., `localhost:51121` refuses connection on Linux/WSL/Docker), manually exchange the code:
+
+1. Generate an OAuth URL and verifier:
+   ```bash
+   python3 -c "
+   import secrets, hashlib, base64, json
+   verifier = secrets.token_urlsafe(32)
+   challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+   state = base64.urlsafe_b64encode(json.dumps({'verifier': verifier, 'projectId': ''}).encode()).decode()
+   url = f'https://accounts.google.com/o/oauth2/v2/auth?client_id=1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com&redirect_uri=http://localhost:51121/oauth-callback&response_type=code&scope=email%20profile%20https://www.googleapis.com/auth/cloud-platform%20https://www.googleapis.com/auth/userinfo.email%20https://www.googleapis.com/auth/userinfo.profile%20https://www.googleapis.com/auth/cclog%20https://www.googleapis.com/auth/experimentsandconfigs%20openid&code_challenge={challenge}&code_challenge_method=S256&state={state}&access_type=offline&prompt=consent'
+   print(f'VERIFIER={verifier}')
+   print(f'URL={url}')
+   "
+   ```
+
+2. Open the URL in your browser, authorize with Google.
+
+3. The page will say "connection refused" — copy the full URL from the address bar.
+
+4. Extract the `code=` parameter and exchange it:
+   ```bash
+   curl -s -X POST https://oauth2.googleapis.com/token \
+     -d "code=YOUR_CODE_HERE" \
+     -d "client_id=1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com" \
+     -d "client_secret=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" \
+     -d "redirect_uri=http://localhost:51121/oauth-callback" \
+     -d "grant_type=authorization_code" \
+     -d "code_verifier=YOUR_VERIFIER_HERE"
+   ```
+
+5. Save the `refresh_token` and `access_token` to your auth config.
 
 </details>
 
@@ -683,8 +724,21 @@ If this plugin helps you, consider supporting its maintenance:
 
 ---
 
+## Changes from Upstream
+
+This fork includes the following fixes not yet in [upstream](https://github.com/NoeFabris/opencode-antigravity-auth):
+
+| Fix | Problem | Solution |
+|-----|---------|----------|
+| **Removed `proper-lockfile`** | CJS module causes `Missing 'default' export` error in Bun runtime (opencode 1.3.x+), preventing plugin from loading at all | Replaced with atomic temp file + rename (callers already used this pattern) |
+| **`PLATFORM_UNSPECIFIED`** | API rejects `MACOS`/`WINDOWS`/`LINUX` platform values with `400 INVALID_ARGUMENT` on `loadCodeAssist` | All `Client-Metadata` and `CODE_ASSIST_METADATA` platform fields now use `PLATFORM_UNSPECIFIED` |
+| **Manual OAuth docs** | OAuth callback (`localhost:51121`) fails on Linux/WSL/Docker without a running Antigravity server | Added step-by-step manual PKCE OAuth exchange instructions |
+
+---
+
 ## Credits
 
+- [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth) by [@NoeFabris](https://github.com/NoeFabris) (upstream)
 - [opencode-gemini-auth](https://github.com/jenslys/opencode-gemini-auth) by [@jenslys](https://github.com/jenslys)
 - [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
 
