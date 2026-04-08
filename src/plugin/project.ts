@@ -15,7 +15,7 @@ const projectContextPendingCache = new Map<string, Promise<ProjectContextResult>
 
 const CODE_ASSIST_METADATA = {
   ideType: "ANTIGRAVITY",
-  platform: process.platform === "win32" ? "WINDOWS" : "MACOS",
+  platform: "PLATFORM_UNSPECIFIED",
   pluginType: "GEMINI",
 } as const;
 

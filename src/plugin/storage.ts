@@ -12,7 +12,7 @@ import {
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomBytes } from "node:crypto";
-import lockfile from "proper-lockfile";
+
 import type { HeaderStyle } from "../constants";
 import { createLogger } from "./logger";
 
@@ -347,20 +347,6 @@ export function getStoragePath(): string {
  */
 export { getConfigDir };
 
-const LOCK_OPTIONS = {
-  stale: 10000,
-  retries: {
-    retries: 5,
-    minTimeout: 100,
-    maxTimeout: 1000,
-    factor: 2,
-  },
-};
-
-/**
- * Ensures the file has secure permissions (0600) on POSIX systems.
- * This is a best-effort operation and ignores errors on Windows/unsupported FS.
- */
 async function ensureSecurePermissions(path: string): Promise<void> {
   try {
     await fs.chmod(path, 0o600);
@@ -384,19 +370,7 @@ async function ensureFileExists(path: string): Promise<void> {
 
 async function withFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   await ensureFileExists(path);
-  let release: (() => Promise<void>) | null = null;
-  try {
-    release = await lockfile.lock(path, LOCK_OPTIONS);
-    return await fn();
-  } finally {
-    if (release) {
-      try {
-        await release();
-      } catch (unlockError) {
-        log.warn("Failed to release lock", { error: String(unlockError) });
-      }
-    }
-  }
+  return await fn();
 }
 
 function mergeAccountStorage(
