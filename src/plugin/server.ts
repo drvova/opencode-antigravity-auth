@@ -148,6 +148,7 @@ export async function startOAuthListener(
   const origin = `${redirectUri.protocol}//${redirectUri.host}`;
 
   let settled = false;
+  let callbackAwaited = false;
   let resolveCallback: (url: URL) => void;
   let rejectCallback: (error: Error) => void;
   let timeoutHandle: NodeJS.Timeout;
@@ -324,23 +325,40 @@ const successResponse = `<!DOCTYPE html>
   const bindAddress = getBindAddress();
   
   await new Promise<void>((resolve, reject) => {
-    const handleError = (error: NodeJS.ErrnoException) => {
-      server.off("error", handleError);
-      if (error.code === "EADDRINUSE") {
-        reject(new Error(
-          `Port ${port} is already in use. ` +
-          `Another process is occupying this port. ` +
-          `Please terminate the process or try again later.`
-        ));
-        return;
-      }
-      reject(error);
+    const maxRetry = 20;
+    const retryDelayMs = 100;
+    let attempts = 0;
+
+    const tryListen = () => {
+      const handleError = (error: NodeJS.ErrnoException) => {
+        server.off("error", handleError);
+
+        if (error.code === "EADDRINUSE" && attempts < maxRetry) {
+          attempts += 1;
+          setTimeout(tryListen, retryDelayMs);
+          return;
+        }
+
+        if (error.code === "EADDRINUSE") {
+          reject(new Error(
+            `Port ${port} is still in use after ${attempts} retries. ` +
+            `Another process may be occupying this port. ` +
+            `Please terminate the process or try again later.`
+          ));
+          return;
+        }
+
+        reject(error);
+      };
+
+      server.once("error", handleError);
+      server.listen(port, bindAddress, () => {
+        server.off("error", handleError);
+        resolve();
+      });
     };
-    server.once("error", handleError);
-    server.listen(port, bindAddress, () => {
-      server.off("error", handleError);
-      resolve();
-    });
+
+    tryListen();
   });
 
   server.on("error", (error) => {
@@ -348,7 +366,10 @@ const successResponse = `<!DOCTYPE html>
   });
 
   return {
-    waitForCallback: () => callbackPromise,
+    waitForCallback: () => {
+      callbackAwaited = true;
+      return callbackPromise;
+    },
     close: () =>
       new Promise<void>((resolve, reject) => {
         server.close((error) => {
@@ -357,7 +378,11 @@ const successResponse = `<!DOCTYPE html>
             return;
           }
           if (!settled) {
-            rejectCallback(new Error("OAuth listener closed before callback"));
+            settled = true;
+            if (timeoutHandle) clearTimeout(timeoutHandle);
+            if (callbackAwaited) {
+              rejectCallback(new Error("OAuth listener closed before callback"));
+            }
           }
           resolve();
         });
