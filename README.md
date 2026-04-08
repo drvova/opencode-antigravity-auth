@@ -750,7 +750,7 @@ This fork includes the following fixes not yet in [upstream](https://github.com/
 | **`PLATFORM_UNSPECIFIED`** | API rejects `MACOS`/`WINDOWS`/`LINUX` platform values with `400 INVALID_ARGUMENT` on `loadCodeAssist` | All `Client-Metadata` and `CODE_ASSIST_METADATA` platform fields now use `PLATFORM_UNSPECIFIED` |
 | **`oauth-login.mjs` script** | OAuth callback (`localhost:51121`) fails on Linux/WSL/Docker without a running Antigravity server — `opencode auth login` doesn't show Antigravity option | Standalone script: starts temp HTTP server, opens browser, exchanges PKCE code, resolves managed project, saves credentials |
 | **TUI plugin target (`./tui`)** | No dedicated in-app account manager for Antigravity in OpenCode TUI | Added an interactive TUI account manager command (`/ag-accounts`, alias `/ag`) with separate dialogs for add/verify/quota/configure, account selection, set current, delete single, and delete all |
-| **Direct TUI actions + load balancer preset** | Quota/verify/configure required leaving the account manager, and load-balancer tuning was manual | `Check quotas`, `Verify all`, `Verify this account`, and `Configure models` now run directly in `/ag-accounts`; plus one-click `Enable load balancer defaults` action (round-robin + performance_first + pid_offset) |
+| **Direct TUI actions + granular load balancer controls** | Quota/verify/configure required leaving the account manager, and load-balancer tuning was manual | `Check quotas`, `Verify all`, `Verify this account`, and `Configure models` now run directly in `/ag-accounts`; plus one-click defaults and a full `Load balancer settings` dialog (strategy, scheduling, PID offset, retry/backoff/jitter, quota refresh tuning) |
 
 ---
 

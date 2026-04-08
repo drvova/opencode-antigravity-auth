@@ -12,6 +12,7 @@ import {
 import { checkAccountsQuota } from "./plugin/quota";
 import { getOpencodeConfigPath, updateOpencodeConfig } from "./plugin/config/updater";
 import { verifyAccountAccess } from "./plugin/verification";
+import { DEFAULT_CONFIG } from "./plugin/config/schema";
 
 const TUI_PLUGIN_ID = "opencode-antigravity-auth:tui";
 const COMMAND_OPEN = "antigravity.accounts";
@@ -174,6 +175,449 @@ async function enableLoadBalancerDefaults(): Promise<{ ok: boolean; message: str
       message: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+type LoadBalancerSettings = {
+  account_selection_strategy: "sticky" | "round-robin" | "hybrid";
+  scheduling_mode: "cache_first" | "balance" | "performance_first";
+  pid_offset_enabled: boolean;
+  switch_on_first_rate_limit: boolean;
+  max_cache_first_wait_seconds: number;
+  default_retry_after_seconds: number;
+  max_backoff_seconds: number;
+  request_jitter_max_ms: number;
+  soft_quota_threshold_percent: number;
+  quota_refresh_interval_minutes: number;
+  cli_first: boolean;
+};
+
+const SETTINGS_KEYS: Array<keyof LoadBalancerSettings> = [
+  "account_selection_strategy",
+  "scheduling_mode",
+  "pid_offset_enabled",
+  "switch_on_first_rate_limit",
+  "max_cache_first_wait_seconds",
+  "default_retry_after_seconds",
+  "max_backoff_seconds",
+  "request_jitter_max_ms",
+  "soft_quota_threshold_percent",
+  "quota_refresh_interval_minutes",
+  "cli_first",
+];
+
+function getDefaultLoadBalancerSettings(): LoadBalancerSettings {
+  return {
+    account_selection_strategy: DEFAULT_CONFIG.account_selection_strategy,
+    scheduling_mode: DEFAULT_CONFIG.scheduling_mode,
+    pid_offset_enabled: DEFAULT_CONFIG.pid_offset_enabled,
+    switch_on_first_rate_limit: DEFAULT_CONFIG.switch_on_first_rate_limit,
+    max_cache_first_wait_seconds: DEFAULT_CONFIG.max_cache_first_wait_seconds,
+    default_retry_after_seconds: DEFAULT_CONFIG.default_retry_after_seconds,
+    max_backoff_seconds: DEFAULT_CONFIG.max_backoff_seconds,
+    request_jitter_max_ms: DEFAULT_CONFIG.request_jitter_max_ms,
+    soft_quota_threshold_percent: DEFAULT_CONFIG.soft_quota_threshold_percent,
+    quota_refresh_interval_minutes: DEFAULT_CONFIG.quota_refresh_interval_minutes,
+    cli_first: DEFAULT_CONFIG.cli_first,
+  };
+}
+
+function normalizeSettingsPatch(input: Record<string, unknown>): Partial<LoadBalancerSettings> {
+  const out: Partial<LoadBalancerSettings> = {};
+  for (const key of SETTINGS_KEYS) {
+    const value = input[key];
+    if (value === undefined) continue;
+    if (typeof getDefaultLoadBalancerSettings()[key] === "boolean") {
+      if (typeof value === "boolean") {
+        out[key] = value as never;
+      }
+      continue;
+    }
+    if (typeof getDefaultLoadBalancerSettings()[key] === "number") {
+      if (typeof value === "number" && Number.isFinite(value)) {
+        out[key] = value as never;
+      }
+      continue;
+    }
+    if (typeof value === "string") {
+      out[key] = value as never;
+    }
+  }
+  return out;
+}
+
+function readOpencodeConfig(): { path: string; config: Record<string, unknown> } {
+  const path = getOpencodeConfigPath();
+  const raw = existsSync(path) ? readFileSync(path, "utf-8") : "{}";
+  const config = JSON.parse(stripJsonCommentsAndTrailingCommas(raw)) as Record<string, unknown>;
+  return { path, config };
+}
+
+function getPluginList(config: Record<string, unknown>): Array<string | [string, Record<string, unknown>]> {
+  const pluginValue = config.plugin;
+  if (!Array.isArray(pluginValue)) return [];
+  return [...(pluginValue as Array<string | [string, Record<string, unknown>]>)];
+}
+
+function findAntigravityPluginEntry(pluginList: Array<string | [string, Record<string, unknown>]>): {
+  index: number;
+  spec: string;
+  options: Record<string, unknown>;
+} | null {
+  for (let i = 0; i < pluginList.length; i++) {
+    const entry = pluginList[i];
+    if (typeof entry === "string") {
+      if (entry.includes("opencode-antigravity-auth")) {
+        return { index: i, spec: entry, options: {} };
+      }
+      continue;
+    }
+    if (Array.isArray(entry) && typeof entry[0] === "string" && entry[0].includes("opencode-antigravity-auth")) {
+      return { index: i, spec: entry[0], options: (entry[1] ?? {}) as Record<string, unknown> };
+    }
+  }
+  return null;
+}
+
+function loadCurrentSettings(): { settings: LoadBalancerSettings; path: string } {
+  const defaults = getDefaultLoadBalancerSettings();
+  const { path, config } = readOpencodeConfig();
+  const pluginList = getPluginList(config);
+  const found = findAntigravityPluginEntry(pluginList);
+  if (!found) {
+    return { settings: defaults, path };
+  }
+  const patch = normalizeSettingsPatch(found.options);
+  return {
+    path,
+    settings: {
+      ...defaults,
+      ...patch,
+    },
+  };
+}
+
+async function writeSettingsPatch(patch: Partial<LoadBalancerSettings>): Promise<{ ok: boolean; path?: string; message: string }> {
+  try {
+    const { path, config } = readOpencodeConfig();
+    const pluginList = getPluginList(config);
+    const found = findAntigravityPluginEntry(pluginList);
+    const normalizedPatch = normalizeSettingsPatch(patch as Record<string, unknown>);
+
+    if (found) {
+      const merged = { ...found.options, ...normalizedPatch };
+      pluginList[found.index] = [found.spec, merged];
+    } else {
+      pluginList.push(["opencode-antigravity-auth@latest", normalizedPatch]);
+    }
+
+    config.plugin = pluginList;
+    writeFileSync(path, JSON.stringify(config, null, 2), "utf-8");
+    return { ok: true, path, message: "Settings updated." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function showNumericPrompt(
+  api: TuiApi,
+  title: string,
+  current: number,
+  min: number,
+  max: number,
+  onDone: () => void,
+  key: keyof LoadBalancerSettings,
+): void {
+  api.ui.dialog.replace(() =>
+    api.ui.DialogPrompt({
+      title,
+      value: String(current),
+      placeholder: `${min}-${max}`,
+      onCancel: onDone,
+      onConfirm: (value: string) => {
+        const parsed = Number.parseInt(value.trim(), 10);
+        if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+          api.ui.toast({ variant: "error", message: `Enter a number between ${min} and ${max}.` });
+          return;
+        }
+        void writeSettingsPatch({ [key]: parsed } as Partial<LoadBalancerSettings>).then((result) => {
+          api.ui.toast({
+            variant: result.ok ? "success" : "error",
+            message: result.ok ? `${title} updated.` : `Failed: ${result.message}`,
+          });
+          onDone();
+        });
+      },
+    }),
+  );
+}
+
+function showStrategySelect(api: TuiApi, onDone: () => void): void {
+  const { settings } = loadCurrentSettings();
+  const options: TuiDialogSelectOption<string>[] = [
+    { title: "sticky", value: "sticky", description: "Reuse current account until limited" },
+    { title: "round-robin", value: "round-robin", description: "Rotate every request (max distribution)" },
+    { title: "hybrid", value: "hybrid", description: "Health + token bucket + freshness" },
+    { title: "Back", value: "back", category: "Navigation" },
+  ];
+  api.ui.dialog.replace(() =>
+    createDialogSelect(api, {
+      title: "Account Selection Strategy",
+      current: settings.account_selection_strategy,
+      options,
+      onSelect: (item: TuiDialogSelectOption<string>) => {
+        if (item.value === "back") {
+          onDone();
+          return;
+        }
+        void writeSettingsPatch({ account_selection_strategy: item.value as LoadBalancerSettings["account_selection_strategy"] }).then((result) => {
+          api.ui.toast({
+            variant: result.ok ? "success" : "error",
+            message: result.ok ? "Strategy updated." : `Failed: ${result.message}`,
+          });
+          onDone();
+        });
+      },
+    }),
+  );
+}
+
+function showSchedulingSelect(api: TuiApi, onDone: () => void): void {
+  const { settings } = loadCurrentSettings();
+  const options: TuiDialogSelectOption<string>[] = [
+    { title: "cache_first", value: "cache_first", description: "Prefer same account for cache continuity" },
+    { title: "balance", value: "balance", description: "Switch accounts sooner under limits" },
+    { title: "performance_first", value: "performance_first", description: "Favor throughput and distribution" },
+    { title: "Back", value: "back", category: "Navigation" },
+  ];
+  api.ui.dialog.replace(() =>
+    createDialogSelect(api, {
+      title: "Scheduling Mode",
+      current: settings.scheduling_mode,
+      options,
+      onSelect: (item: TuiDialogSelectOption<string>) => {
+        if (item.value === "back") {
+          onDone();
+          return;
+        }
+        void writeSettingsPatch({ scheduling_mode: item.value as LoadBalancerSettings["scheduling_mode"] }).then((result) => {
+          api.ui.toast({
+            variant: result.ok ? "success" : "error",
+            message: result.ok ? "Scheduling mode updated." : `Failed: ${result.message}`,
+          });
+          onDone();
+        });
+      },
+    }),
+  );
+}
+
+function showLoadBalancerSettingsDialog(api: TuiApi): void {
+  const { settings, path } = loadCurrentSettings();
+  const options: TuiDialogSelectOption<string>[] = [
+    {
+      title: "Preset: Throughput",
+      value: "preset:throughput",
+      category: "Presets",
+      description: "round-robin + performance_first + pid_offset_enabled",
+    },
+    {
+      title: "Preset: Balanced",
+      value: "preset:balanced",
+      category: "Presets",
+      description: "hybrid + balance + pid_offset_enabled",
+    },
+    {
+      title: "Preset: Cache-friendly",
+      value: "preset:cache",
+      category: "Presets",
+      description: "hybrid + cache_first + pid_offset_disabled",
+    },
+    {
+      title: `Strategy: ${settings.account_selection_strategy}`,
+      value: "set:strategy",
+      category: "Core",
+    },
+    {
+      title: `Scheduling: ${settings.scheduling_mode}`,
+      value: "set:scheduling",
+      category: "Core",
+    },
+    {
+      title: `PID offset: ${settings.pid_offset_enabled ? "on" : "off"}`,
+      value: "toggle:pid_offset_enabled",
+      category: "Core",
+    },
+    {
+      title: `Switch on first rate limit: ${settings.switch_on_first_rate_limit ? "on" : "off"}`,
+      value: "toggle:switch_on_first_rate_limit",
+      category: "Core",
+    },
+    {
+      title: `CLI first: ${settings.cli_first ? "on" : "off"}`,
+      value: "toggle:cli_first",
+      category: "Core",
+    },
+    {
+      title: `Max cache wait (s): ${settings.max_cache_first_wait_seconds}`,
+      value: "set:max_cache_first_wait_seconds",
+      category: "Timing",
+    },
+    {
+      title: `Default retry-after (s): ${settings.default_retry_after_seconds}`,
+      value: "set:default_retry_after_seconds",
+      category: "Timing",
+    },
+    {
+      title: `Max backoff (s): ${settings.max_backoff_seconds}`,
+      value: "set:max_backoff_seconds",
+      category: "Timing",
+    },
+    {
+      title: `Request jitter max (ms): ${settings.request_jitter_max_ms}`,
+      value: "set:request_jitter_max_ms",
+      category: "Timing",
+    },
+    {
+      title: `Soft quota threshold (%): ${settings.soft_quota_threshold_percent}`,
+      value: "set:soft_quota_threshold_percent",
+      category: "Quota",
+    },
+    {
+      title: `Quota refresh interval (min): ${settings.quota_refresh_interval_minutes}`,
+      value: "set:quota_refresh_interval_minutes",
+      category: "Quota",
+    },
+    {
+      title: "Show effective settings",
+      value: "show:effective",
+      category: "Inspect",
+      description: path,
+    },
+    {
+      title: "Back",
+      value: "back",
+      category: "Navigation",
+    },
+  ];
+
+  api.ui.dialog.setSize("xlarge");
+  api.ui.dialog.replace(() =>
+    createDialogSelect(api, {
+      title: "Load Balancer Settings",
+      options,
+      onSelect: (item: TuiDialogSelectOption<string>) => {
+        if (item.value === "back") {
+          showAccountsDialog(api);
+          return;
+        }
+
+        if (item.value === "set:strategy") {
+          showStrategySelect(api, () => showLoadBalancerSettingsDialog(api));
+          return;
+        }
+        if (item.value === "set:scheduling") {
+          showSchedulingSelect(api, () => showLoadBalancerSettingsDialog(api));
+          return;
+        }
+
+        if (item.value.startsWith("toggle:")) {
+          const key = item.value.slice("toggle:".length) as keyof LoadBalancerSettings;
+          const next = !Boolean(settings[key]);
+          void writeSettingsPatch({ [key]: next } as Partial<LoadBalancerSettings>).then((result) => {
+            api.ui.toast({
+              variant: result.ok ? "success" : "error",
+              message: result.ok ? `${key} set to ${next}.` : `Failed: ${result.message}`,
+            });
+            showLoadBalancerSettingsDialog(api);
+          });
+          return;
+        }
+
+        if (item.value.startsWith("set:")) {
+          const key = item.value.slice("set:".length) as keyof LoadBalancerSettings;
+          if (key === "max_cache_first_wait_seconds") {
+            showNumericPrompt(api, "Max cache wait seconds", settings.max_cache_first_wait_seconds, 5, 300, () => showLoadBalancerSettingsDialog(api), key);
+            return;
+          }
+          if (key === "default_retry_after_seconds") {
+            showNumericPrompt(api, "Default retry-after seconds", settings.default_retry_after_seconds, 1, 300, () => showLoadBalancerSettingsDialog(api), key);
+            return;
+          }
+          if (key === "max_backoff_seconds") {
+            showNumericPrompt(api, "Max backoff seconds", settings.max_backoff_seconds, 5, 300, () => showLoadBalancerSettingsDialog(api), key);
+            return;
+          }
+          if (key === "request_jitter_max_ms") {
+            showNumericPrompt(api, "Request jitter max ms", settings.request_jitter_max_ms, 0, 5000, () => showLoadBalancerSettingsDialog(api), key);
+            return;
+          }
+          if (key === "soft_quota_threshold_percent") {
+            showNumericPrompt(api, "Soft quota threshold percent", settings.soft_quota_threshold_percent, 1, 100, () => showLoadBalancerSettingsDialog(api), key);
+            return;
+          }
+          if (key === "quota_refresh_interval_minutes") {
+            showNumericPrompt(api, "Quota refresh interval minutes", settings.quota_refresh_interval_minutes, 0, 60, () => showLoadBalancerSettingsDialog(api), key);
+            return;
+          }
+        }
+
+        if (item.value === "show:effective") {
+          showTextDialog(
+            api,
+            "Effective Load Balancer Settings",
+            [
+              `strategy=${settings.account_selection_strategy}`,
+              `scheduling=${settings.scheduling_mode}`,
+              `pid_offset_enabled=${settings.pid_offset_enabled}`,
+              `switch_on_first_rate_limit=${settings.switch_on_first_rate_limit}`,
+              `cli_first=${settings.cli_first}`,
+              `max_cache_first_wait_seconds=${settings.max_cache_first_wait_seconds}`,
+              `default_retry_after_seconds=${settings.default_retry_after_seconds}`,
+              `max_backoff_seconds=${settings.max_backoff_seconds}`,
+              `request_jitter_max_ms=${settings.request_jitter_max_ms}`,
+              `soft_quota_threshold_percent=${settings.soft_quota_threshold_percent}`,
+              `quota_refresh_interval_minutes=${settings.quota_refresh_interval_minutes}`,
+              `config=${path}`,
+            ],
+            () => showLoadBalancerSettingsDialog(api),
+          );
+          return;
+        }
+
+        if (item.value.startsWith("preset:")) {
+          let patch: Partial<LoadBalancerSettings> = {};
+          if (item.value === "preset:throughput") {
+            patch = {
+              account_selection_strategy: "round-robin",
+              scheduling_mode: "performance_first",
+              pid_offset_enabled: true,
+            };
+          }
+          if (item.value === "preset:balanced") {
+            patch = {
+              account_selection_strategy: "hybrid",
+              scheduling_mode: "balance",
+              pid_offset_enabled: true,
+            };
+          }
+          if (item.value === "preset:cache") {
+            patch = {
+              account_selection_strategy: "hybrid",
+              scheduling_mode: "cache_first",
+              pid_offset_enabled: false,
+            };
+          }
+          void writeSettingsPatch(patch).then((result) => {
+            api.ui.toast({
+              variant: result.ok ? "success" : "error",
+              message: result.ok ? "Preset applied." : `Failed: ${result.message}`,
+            });
+            showLoadBalancerSettingsDialog(api);
+          });
+        }
+      },
+    }),
+  );
 }
 
 function showTextDialog(api: TuiApi, title: string, lines: string[], onBack?: () => void): void {
@@ -542,6 +986,12 @@ function buildOptions(storage: AccountStorageV4 | null): TuiDialogSelectOption<s
       description: "Set round-robin + performance_first + pid_offset_enabled in plugin config",
     },
     {
+      title: "Load balancer settings",
+      value: "action:load-balancer-settings",
+      category: "Actions",
+      description: "Granular tuning for strategy, scheduling, retries, jitter, and quota windows",
+    },
+    {
       title: "Reload",
       value: "action:reload",
       category: "Actions",
@@ -611,6 +1061,9 @@ function handleMainAction(api: TuiApi, value: string): void {
           () => showAccountsDialog(api),
         );
       })();
+      break;
+    case "action:load-balancer-settings":
+      showLoadBalancerSettingsDialog(api);
       break;
     case "action:delete-all":
       clearAccounts()
