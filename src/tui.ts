@@ -135,9 +135,9 @@ async function enableLoadBalancerDefaults(): Promise<{ ok: boolean; message: str
       : [];
 
     const settings = {
-      account_selection_strategy: "round-robin",
-      scheduling_mode: "performance_first",
-      pid_offset_enabled: true,
+      account_selection_strategy: "hybrid",
+      scheduling_mode: "cache_first",
+      pid_offset_enabled: false,
     };
 
     let found = false;
@@ -167,7 +167,7 @@ async function enableLoadBalancerDefaults(): Promise<{ ok: boolean; message: str
       ok: true,
       path: configPath,
       message:
-        "Enabled load-balancer defaults: round-robin + performance_first + pid_offset_enabled=true",
+        "Enabled load-balancer defaults: hybrid + cache_first + pid_offset_enabled=false",
     };
   } catch (error) {
     return {
@@ -983,7 +983,7 @@ function buildOptions(storage: AccountStorageV4 | null): TuiDialogSelectOption<s
       title: "Enable load balancer defaults",
       value: "action:enable-load-balancer",
       category: "Actions",
-      description: "Set round-robin + performance_first + pid_offset_enabled in plugin config",
+      description: "Set hybrid + cache_first + pid_offset_disabled in plugin config",
     },
     {
       title: "Load balancer settings",
