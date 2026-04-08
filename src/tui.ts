@@ -1,10 +1,16 @@
 import type { TuiDialogSelectOption } from "@opencode-ai/plugin/tui";
+import { ANTIGRAVITY_PROVIDER_ID } from "./constants";
 import {
   clearAccounts,
   loadAccounts,
+  saveAccounts,
   saveAccountsReplace,
+  type AccountMetadataV3,
   type AccountStorageV4,
 } from "./plugin/storage";
+import { checkAccountsQuota } from "./plugin/quota";
+import { updateOpencodeConfig } from "./plugin/config/updater";
+import { verifyAccountAccess } from "./plugin/verification";
 
 const TUI_PLUGIN_ID = "opencode-antigravity-auth:tui";
 const COMMAND_OPEN = "antigravity.accounts";
@@ -89,6 +95,259 @@ function createDialogSelect(api: TuiApi, props: any): any {
   return api.ui.DialogSelect(props);
 }
 
+function formatWaitTime(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m`;
+  return `${totalSeconds}s`;
+}
+
+function formatReset(resetTime?: string): string {
+  if (!resetTime) return "";
+  const ms = Date.parse(resetTime) - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return " (resetting)";
+  return ` (resets in ${formatWaitTime(ms)})`;
+}
+
+function showTextDialog(api: TuiApi, title: string, lines: string[], onBack?: () => void): void {
+  const options: TuiDialogSelectOption<string>[] = [
+    ...lines.map((line, i) => ({
+      title: line,
+      value: `line:${i}`,
+      category: "Info",
+    })),
+    {
+      title: "Back",
+      value: "back",
+      category: "Navigation",
+    },
+  ];
+
+  api.ui.dialog.setSize("xlarge");
+  api.ui.dialog.replace(() =>
+    createDialogSelect(api, {
+      title,
+      options,
+      onSelect: (item: TuiDialogSelectOption<string>) => {
+        if (item.value === "back") {
+          if (onBack) onBack();
+        }
+      },
+    }),
+  );
+}
+
+function markVerificationRequired(account: AccountMetadataV3, reason: string, verifyUrl?: string): boolean {
+  let changed = false;
+  if (account.verificationRequired !== true) {
+    account.verificationRequired = true;
+    changed = true;
+  }
+  if (account.verificationRequiredAt === undefined) {
+    account.verificationRequiredAt = Date.now();
+    changed = true;
+  }
+  const normalizedReason = reason.trim();
+  if (account.verificationRequiredReason !== normalizedReason) {
+    account.verificationRequiredReason = normalizedReason;
+    changed = true;
+  }
+  const normalizedUrl = verifyUrl?.trim();
+  if (normalizedUrl && account.verificationUrl !== normalizedUrl) {
+    account.verificationUrl = normalizedUrl;
+    changed = true;
+  }
+  if (account.enabled !== false) {
+    account.enabled = false;
+    changed = true;
+  }
+  return changed;
+}
+
+function clearVerificationRequired(account: AccountMetadataV3): boolean {
+  let changed = false;
+  if (account.verificationRequired !== false) {
+    account.verificationRequired = false;
+    changed = true;
+  }
+  if (account.verificationRequiredAt !== undefined) {
+    account.verificationRequiredAt = undefined;
+    changed = true;
+  }
+  if (account.verificationRequiredReason !== undefined) {
+    account.verificationRequiredReason = undefined;
+    changed = true;
+  }
+  if (account.verificationUrl !== undefined) {
+    account.verificationUrl = undefined;
+    changed = true;
+  }
+  if (account.enabled === false) {
+    account.enabled = true;
+    changed = true;
+  }
+  return changed;
+}
+
+async function runQuotaCheck(api: TuiApi): Promise<void> {
+  const storage = await loadAccounts();
+  if (!storage || storage.accounts.length === 0) {
+    api.ui.toast({ variant: "error", message: "No accounts found." });
+    return;
+  }
+
+  api.ui.toast({ variant: "info", message: `Checking quotas for ${storage.accounts.length} account(s)...` });
+  const results = await checkAccountsQuota(storage.accounts, api.client, ANTIGRAVITY_PROVIDER_ID);
+
+  let storageUpdated = false;
+  const lines: string[] = [];
+  for (const result of results) {
+    const label = result.email || `Account ${result.index + 1}`;
+    if (result.status === "error") {
+      lines.push(`${label}: ERROR - ${result.error ?? "quota fetch failed"}`);
+      continue;
+    }
+
+    if (result.updatedAccount) {
+      storage.accounts[result.index] = {
+        ...result.updatedAccount,
+        cachedQuota: result.quota?.groups,
+        cachedQuotaUpdatedAt: Date.now(),
+      };
+      storageUpdated = true;
+    } else {
+      const acc = storage.accounts[result.index];
+      if (acc && result.quota?.groups) {
+        acc.cachedQuota = result.quota.groups;
+        acc.cachedQuotaUpdatedAt = Date.now();
+        storageUpdated = true;
+      }
+    }
+
+    lines.push(`${label}`);
+    const claude = result.quota?.groups?.claude;
+    const pro = result.quota?.groups?.["gemini-pro"];
+    const flash = result.quota?.groups?.["gemini-flash"];
+
+    const formatPct = (fraction?: number) =>
+      typeof fraction === "number" ? `${Math.round(Math.max(0, Math.min(1, fraction)) * 100)}%` : "n/a";
+
+    lines.push(`  Antigravity Claude: ${formatPct(claude?.remainingFraction)}${formatReset(claude?.resetTime)}`);
+    lines.push(`  Antigravity Gemini Pro: ${formatPct(pro?.remainingFraction)}${formatReset(pro?.resetTime)}`);
+    lines.push(`  Antigravity Gemini Flash: ${formatPct(flash?.remainingFraction)}${formatReset(flash?.resetTime)}`);
+
+    if (result.geminiCliQuota?.models?.length) {
+      for (const model of result.geminiCliQuota.models) {
+        lines.push(
+          `  Gemini CLI ${model.modelId}: ${Math.round(model.remainingFraction * 100)}%${formatReset(model.resetTime)}`,
+        );
+      }
+    }
+  }
+
+  if (storageUpdated) {
+    await saveAccounts(storage);
+  }
+
+  showTextDialog(api, "Quota Results", lines, () => showAccountsDialog(api));
+}
+
+async function runConfigureModels(api: TuiApi): Promise<void> {
+  const result = await updateOpencodeConfig();
+  if (!result.success) {
+    api.ui.toast({ variant: "error", message: result.error || "Failed to configure models." });
+    return;
+  }
+
+  showTextDialog(
+    api,
+    "Models Configured",
+    [
+      "Antigravity model definitions were written successfully.",
+      `Config: ${result.configPath}`,
+    ],
+    () => showAccountsDialog(api),
+  );
+}
+
+async function runVerifyAll(api: TuiApi): Promise<void> {
+  const storage = await loadAccounts();
+  if (!storage || storage.accounts.length === 0) {
+    api.ui.toast({ variant: "error", message: "No accounts found." });
+    return;
+  }
+
+  const lines: string[] = [];
+  let changed = false;
+
+  for (let i = 0; i < storage.accounts.length; i++) {
+    const account = storage.accounts[i];
+    if (!account) continue;
+    const label = account.email || `Account ${i + 1}`;
+
+    const verification = await verifyAccountAccess(account, api.client, ANTIGRAVITY_PROVIDER_ID);
+    if (verification.status === "ok") {
+      if (clearVerificationRequired(account)) changed = true;
+      lines.push(`${label}: OK`);
+      continue;
+    }
+
+    if (verification.status === "blocked") {
+      if (markVerificationRequired(account, verification.message, verification.verifyUrl)) changed = true;
+      lines.push(`${label}: NEEDS VERIFICATION - ${verification.message}`);
+      if (verification.verifyUrl) {
+        lines.push(`  URL: ${verification.verifyUrl}`);
+      }
+      continue;
+    }
+
+    lines.push(`${label}: ERROR - ${verification.message}`);
+  }
+
+  if (changed) {
+    await saveAccountsReplace(storage);
+  }
+
+  showTextDialog(api, "Verification Results", lines, () => showAccountsDialog(api));
+}
+
+async function runVerifyOne(api: TuiApi, index: number): Promise<void> {
+  const storage = await loadAccounts();
+  if (!storage || !storage.accounts[index]) {
+    api.ui.toast({ variant: "error", message: "Account not found." });
+    return;
+  }
+  const account = storage.accounts[index]!;
+  const label = account.email || `Account ${index + 1}`;
+  const verification = await verifyAccountAccess(account, api.client, ANTIGRAVITY_PROVIDER_ID);
+
+  if (verification.status === "ok") {
+    const changed = clearVerificationRequired(account);
+    if (changed) {
+      await saveAccountsReplace(storage);
+    }
+    showTextDialog(api, "Verification Result", [`${label}: OK`], () => showAccountActions(api, index));
+    return;
+  }
+
+  if (verification.status === "blocked") {
+    const changed = markVerificationRequired(account, verification.message, verification.verifyUrl);
+    if (changed) {
+      await saveAccountsReplace(storage);
+    }
+    const lines = [`${label}: NEEDS VERIFICATION`, verification.message];
+    if (verification.verifyUrl) lines.push(`URL: ${verification.verifyUrl}`);
+    showTextDialog(api, "Verification Result", lines, () => showAccountActions(api, index));
+    return;
+  }
+
+  showTextDialog(api, "Verification Result", [`${label}: ERROR`, verification.message], () => showAccountActions(api, index));
+}
+
 function openProviderConnect(api: TuiApi, message?: string): void {
   if (message) {
     api.ui.toast({
@@ -158,7 +417,8 @@ function showAccountActions(api: TuiApi, index: number): void {
         }
 
         if (item.value.startsWith("verify:")) {
-          openProviderConnect(api, "Select Google → OAuth with Google (Antigravity), then choose Verify one account.");
+          const target = Number.parseInt(item.value.split(":")[1] ?? "-1", 10);
+          void runVerifyOne(api, target);
           return;
         }
 
@@ -257,13 +517,13 @@ function handleMainAction(api: TuiApi, value: string): void {
       openProviderConnect(api, "Select Google → OAuth with Google (Antigravity), then choose Add account.");
       break;
     case "action:quota":
-      openProviderConnect(api, "Select Google → OAuth with Google (Antigravity), then choose Check quotas.");
+      void runQuotaCheck(api);
       break;
     case "action:verify-all":
-      openProviderConnect(api, "Select Google → OAuth with Google (Antigravity), then choose Verify all accounts.");
+      void runVerifyAll(api);
       break;
     case "action:configure-models":
-      openProviderConnect(api, "Select Google → OAuth with Google (Antigravity), then choose Configure models.");
+      void runConfigureModels(api);
       break;
     case "action:delete-all":
       clearAccounts()
