@@ -1,4 +1,5 @@
 import type { TuiDialogSelectOption } from "@opencode-ai/plugin/tui";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { ANTIGRAVITY_PROVIDER_ID } from "./constants";
 import {
   clearAccounts,
@@ -9,7 +10,7 @@ import {
   type AccountStorageV4,
 } from "./plugin/storage";
 import { checkAccountsQuota } from "./plugin/quota";
-import { updateOpencodeConfig } from "./plugin/config/updater";
+import { getOpencodeConfigPath, updateOpencodeConfig } from "./plugin/config/updater";
 import { verifyAccountAccess } from "./plugin/verification";
 
 const TUI_PLUGIN_ID = "opencode-antigravity-auth:tui";
@@ -111,6 +112,68 @@ function formatReset(resetTime?: string): string {
   const ms = Date.parse(resetTime) - Date.now();
   if (!Number.isFinite(ms) || ms <= 0) return " (resetting)";
   return ` (resets in ${formatWaitTime(ms)})`;
+}
+
+function stripJsonCommentsAndTrailingCommas(json: string): string {
+  return json
+    .replace(/\\"|"(?:\\"|[^"])*"|(\/\/.*|\/\*[\s\S]*?\*\/)/g, (match: string, group: string | undefined) =>
+      group ? "" : match,
+    )
+    .replace(/,(\s*[}\]])/g, "$1");
+}
+
+async function enableLoadBalancerDefaults(): Promise<{ ok: boolean; message: string; path?: string }> {
+  const configPath = getOpencodeConfigPath();
+  try {
+    const raw = existsSync(configPath) ? readFileSync(configPath, "utf-8") : "{}";
+    const config = JSON.parse(stripJsonCommentsAndTrailingCommas(raw)) as Record<string, unknown>;
+
+    const pluginValue = config.plugin;
+    const pluginList: Array<string | [string, Record<string, unknown>]> = Array.isArray(pluginValue)
+      ? [...pluginValue as Array<string | [string, Record<string, unknown>]>]
+      : [];
+
+    const settings = {
+      account_selection_strategy: "round-robin",
+      scheduling_mode: "performance_first",
+      pid_offset_enabled: true,
+    };
+
+    let found = false;
+    for (let i = 0; i < pluginList.length; i++) {
+      const entry = pluginList[i];
+      if (typeof entry === "string") {
+        if (entry.includes("opencode-antigravity-auth")) {
+          pluginList[i] = [entry, settings];
+          found = true;
+          break;
+        }
+      } else if (Array.isArray(entry) && typeof entry[0] === "string" && entry[0].includes("opencode-antigravity-auth")) {
+        pluginList[i] = [entry[0], { ...(entry[1] ?? {}), ...settings }];
+        found = true;
+        break;
+      }
+    }
+
+    if (!found) {
+      pluginList.push(["opencode-antigravity-auth@latest", settings]);
+    }
+
+    config.plugin = pluginList;
+    writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+
+    return {
+      ok: true,
+      path: configPath,
+      message:
+        "Enabled load-balancer defaults: round-robin + performance_first + pid_offset_enabled=true",
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 function showTextDialog(api: TuiApi, title: string, lines: string[], onBack?: () => void): void {
@@ -473,6 +536,12 @@ function buildOptions(storage: AccountStorageV4 | null): TuiDialogSelectOption<s
       description: "Write Antigravity model definitions to opencode.json",
     },
     {
+      title: "Enable load balancer defaults",
+      value: "action:enable-load-balancer",
+      category: "Actions",
+      description: "Set round-robin + performance_first + pid_offset_enabled in plugin config",
+    },
+    {
       title: "Reload",
       value: "action:reload",
       category: "Actions",
@@ -524,6 +593,24 @@ function handleMainAction(api: TuiApi, value: string): void {
       break;
     case "action:configure-models":
       void runConfigureModels(api);
+      break;
+    case "action:enable-load-balancer":
+      void (async () => {
+        const result = await enableLoadBalancerDefaults();
+        if (!result.ok) {
+          api.ui.toast({ variant: "error", message: `Failed to enable load balancer defaults: ${result.message}` });
+          return;
+        }
+        showTextDialog(
+          api,
+          "Load Balancer Defaults Enabled",
+          [
+            result.message,
+            result.path ? `Config: ${result.path}` : "",
+          ].filter(Boolean),
+          () => showAccountsDialog(api),
+        );
+      })();
       break;
     case "action:delete-all":
       clearAccounts()
