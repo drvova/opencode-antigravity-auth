@@ -84,6 +84,12 @@ Install the opencode-antigravity-auth plugin and add the Antigravity model defin
    opencode auth login --provider google --method "OAuth with Google (Antigravity)"
    ```
 
+   Or inside TUI, run:
+
+   ```text
+   /ag-accounts
+   ```
+
    > **Linux / Bun users**: If `opencode auth login` doesn't show the Antigravity OAuth option, you need to manually exchange an OAuth code. See [Manual OAuth for Linux](#manual-oauth-for-linux) below.
 
 3. **Add models** — choose one:
@@ -743,7 +749,7 @@ This fork includes the following fixes not yet in [upstream](https://github.com/
 | **Removed `proper-lockfile`** | CJS module causes `Missing 'default' export` error in Bun runtime (opencode 1.3.x+), preventing plugin from loading at all | Replaced with atomic temp file + rename (callers already used this pattern) |
 | **`PLATFORM_UNSPECIFIED`** | API rejects `MACOS`/`WINDOWS`/`LINUX` platform values with `400 INVALID_ARGUMENT` on `loadCodeAssist` | All `Client-Metadata` and `CODE_ASSIST_METADATA` platform fields now use `PLATFORM_UNSPECIFIED` |
 | **`oauth-login.mjs` script** | OAuth callback (`localhost:51121`) fails on Linux/WSL/Docker without a running Antigravity server — `opencode auth login` doesn't show Antigravity option | Standalone script: starts temp HTTP server, opens browser, exchanges PKCE code, resolves managed project, saves credentials |
-| **TUI plugin target (`./tui`)** | No direct, discoverable entry in OpenCode TUI command palette for Antigravity account settings | Added a TUI plugin command (`/ag-accounts`, alias `/ag`) that opens Provider Connect (Google → Antigravity) |
+| **TUI plugin target (`./tui`)** | No dedicated in-app account manager for Antigravity in OpenCode TUI | Added an interactive TUI account manager command (`/ag-accounts`, alias `/ag`) with separate dialogs for add/verify/quota/configure, account selection, set current, delete single, and delete all |
 
 ---
 
