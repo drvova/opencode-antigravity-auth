@@ -86,37 +86,32 @@ Install the opencode-antigravity-auth plugin and add the Antigravity model defin
 <details>
 <summary><b>Manual OAuth for Linux</b></summary>
 
-If the Antigravity OAuth callback fails (e.g., `localhost:51121` refuses connection on Linux/WSL/Docker), manually exchange the code:
+If `opencode auth login` doesn't show the Antigravity OAuth option (common on Linux/WSL/Docker), use the built-in login script:
 
-1. Generate an OAuth URL and verifier:
-   ```bash
-   python3 -c "
-   import secrets, hashlib, base64, json
-   verifier = secrets.token_urlsafe(32)
-   challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
-   state = base64.urlsafe_b64encode(json.dumps({'verifier': verifier, 'projectId': ''}).encode()).decode()
-   url = f'https://accounts.google.com/o/oauth2/v2/auth?client_id=1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com&redirect_uri=http://localhost:51121/oauth-callback&response_type=code&scope=email%20profile%20https://www.googleapis.com/auth/cloud-platform%20https://www.googleapis.com/auth/userinfo.email%20https://www.googleapis.com/auth/userinfo.profile%20https://www.googleapis.com/auth/cclog%20https://www.googleapis.com/auth/experimentsandconfigs%20openid&code_challenge={challenge}&code_challenge_method=S256&state={state}&access_type=offline&prompt=consent'
-   print(f'VERIFIER={verifier}')
-   print(f'URL={url}')
-   "
-   ```
+```bash
+node ~/.config/opencode/node_modules/opencode-antigravity-auth/scripts/oauth-login.mjs
+```
 
-2. Open the URL in your browser, authorize with Google.
+Or from a cloned repo:
 
-3. The page will say "connection refused" — copy the full URL from the address bar.
+```bash
+node scripts/oauth-login.mjs
+```
 
-4. Extract the `code=` parameter and exchange it:
-   ```bash
-   curl -s -X POST https://oauth2.googleapis.com/token \
-     -d "code=YOUR_CODE_HERE" \
-     -d "client_id=1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com" \
-     -d "client_secret=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" \
-     -d "redirect_uri=http://localhost:51121/oauth-callback" \
-     -d "grant_type=authorization_code" \
-     -d "code_verifier=YOUR_VERIFIER_HERE"
-   ```
+This will:
+1. Start a temporary HTTP server on port 51121
+2. Generate PKCE verifier/challenge
+3. Open your browser to Google OAuth
+4. Exchange the authorization code for tokens
+5. Resolve your managed project via `loadCodeAssist`
+6. Save credentials to `auth.json` and `antigravity-accounts.json`
 
-5. Save the `refresh_token` and `access_token` to your auth config.
+**If the browser doesn't open automatically**, the script prints the URL — copy it into any browser. The callback will work as long as `localhost:51121` is reachable.
+
+**For SSH/remote/containers**, forward the port first:
+```bash
+ssh -L 51121:localhost:51121 user@remote
+```
 
 </details>
 
@@ -732,7 +727,7 @@ This fork includes the following fixes not yet in [upstream](https://github.com/
 |-----|---------|----------|
 | **Removed `proper-lockfile`** | CJS module causes `Missing 'default' export` error in Bun runtime (opencode 1.3.x+), preventing plugin from loading at all | Replaced with atomic temp file + rename (callers already used this pattern) |
 | **`PLATFORM_UNSPECIFIED`** | API rejects `MACOS`/`WINDOWS`/`LINUX` platform values with `400 INVALID_ARGUMENT` on `loadCodeAssist` | All `Client-Metadata` and `CODE_ASSIST_METADATA` platform fields now use `PLATFORM_UNSPECIFIED` |
-| **Manual OAuth docs** | OAuth callback (`localhost:51121`) fails on Linux/WSL/Docker without a running Antigravity server | Added step-by-step manual PKCE OAuth exchange instructions |
+| **`oauth-login.mjs` script** | OAuth callback (`localhost:51121`) fails on Linux/WSL/Docker without a running Antigravity server — `opencode auth login` doesn't show Antigravity option | Standalone script: starts temp HTTP server, opens browser, exchanges PKCE code, resolves managed project, saves credentials |
 
 ---
 
