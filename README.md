@@ -61,12 +61,27 @@ Install the opencode-antigravity-auth plugin and add the Antigravity model defin
    }
    ```
 
+   Add it to `~/.config/opencode/tui.json` to enable TUI command integration:
+
+   ```json
+   {
+     "$schema": "https://opencode.ai/tui.json",
+     "plugin": ["opencode-antigravity-auth@latest"]
+   }
+   ```
+
    > Want bleeding-edge features? Use `opencode-antigravity-auth@beta` instead.
 
 2. **Login** with your Google account:
 
    ```bash
    opencode auth login
+   ```
+
+   Optional: open Antigravity account management directly from TUI:
+
+   ```bash
+   opencode auth login --provider google --method "OAuth with Google (Antigravity)"
    ```
 
    > **Linux / Bun users**: If `opencode auth login` doesn't show the Antigravity OAuth option, you need to manually exchange an OAuth code. See [Manual OAuth for Linux](#manual-oauth-for-linux) below.
@@ -728,6 +743,7 @@ This fork includes the following fixes not yet in [upstream](https://github.com/
 | **Removed `proper-lockfile`** | CJS module causes `Missing 'default' export` error in Bun runtime (opencode 1.3.x+), preventing plugin from loading at all | Replaced with atomic temp file + rename (callers already used this pattern) |
 | **`PLATFORM_UNSPECIFIED`** | API rejects `MACOS`/`WINDOWS`/`LINUX` platform values with `400 INVALID_ARGUMENT` on `loadCodeAssist` | All `Client-Metadata` and `CODE_ASSIST_METADATA` platform fields now use `PLATFORM_UNSPECIFIED` |
 | **`oauth-login.mjs` script** | OAuth callback (`localhost:51121`) fails on Linux/WSL/Docker without a running Antigravity server — `opencode auth login` doesn't show Antigravity option | Standalone script: starts temp HTTP server, opens browser, exchanges PKCE code, resolves managed project, saves credentials |
+| **TUI plugin target (`./tui`)** | No direct, discoverable entry in OpenCode TUI command palette for Antigravity account settings | Added a TUI plugin command (`/ag-accounts`, alias `/ag`) that opens Provider Connect (Google → Antigravity) |
 
 ---
 
