@@ -403,28 +403,23 @@ export class AccountManager {
       return;
     }
 
-    // If we have stored accounts, check if we need to add the current auth
+    // If we have stored accounts, treat storage as source of truth.
+    // Only sync access/expires into an existing matching account by refresh token.
+    // This avoids creating ghost accounts from stale auth fallback records.
     if (authFallback && this.accounts.length > 0) {
       const authParts = parseRefreshParts(authFallback.refresh);
-      const hasMatching = this.accounts.some(acc => acc.parts.refreshToken === authParts.refreshToken);
-      if (!hasMatching && authParts.refreshToken) {
-        const now = nowMs();
-        const newAccount: ManagedAccount = {
-          index: this.accounts.length,
-          email: undefined,
-          addedAt: now,
-          lastUsed: 0,
-          parts: authParts,
-          access: authFallback.access,
-          expires: authFallback.expires,
-          enabled: true,
-          rateLimitResetTimes: {},
-          touchedForQuota: {},
-        };
-        this.accounts.push(newAccount);
-        // Update indices to include the new account
-        this.currentAccountIndexByFamily.claude = Math.min(this.currentAccountIndexByFamily.claude, this.accounts.length - 1);
-        this.currentAccountIndexByFamily.gemini = Math.min(this.currentAccountIndexByFamily.gemini, this.accounts.length - 1);
+      if (authParts.refreshToken) {
+        const match = this.accounts.find((acc) => acc.parts.refreshToken === authParts.refreshToken);
+        if (match) {
+          match.access = authFallback.access;
+          match.expires = authFallback.expires;
+          if (authParts.projectId) {
+            match.parts.projectId = authParts.projectId;
+          }
+          if (authParts.managedProjectId) {
+            match.parts.managedProjectId = authParts.managedProjectId;
+          }
+        }
       }
     }
 
