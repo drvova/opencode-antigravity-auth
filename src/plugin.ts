@@ -1222,6 +1222,10 @@ export const createAntigravityPlugin = (providerId: string) => async (
 
   // Cached getAuth function for tool access
   let cachedGetAuth: GetAuth | null = null;
+
+  // Sticky project affinity per account (session-scoped)
+  // Keyed by refresh token so each account stays on one project for cache stability.
+  const sessionProjectAffinityByRefreshToken = new Map<string, string>();
   
   // Initialize debug with config
   initializeDebug(config);
@@ -1804,6 +1808,27 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 await accountManager.saveToDisk();
               } catch (error) {
                 log.error("Failed to persist project context", { error: String(error) });
+              }
+            }
+
+            {
+              const affinityKey = account.parts.refreshToken;
+              const persistedProject = account.parts.managedProjectId ?? account.parts.projectId;
+              const stickyProject = sessionProjectAffinityByRefreshToken.get(affinityKey) ?? persistedProject;
+
+              if (stickyProject) {
+                if (!sessionProjectAffinityByRefreshToken.has(affinityKey)) {
+                  sessionProjectAffinityByRefreshToken.set(affinityKey, stickyProject);
+                }
+                if (projectContext.effectiveProjectId !== stickyProject) {
+                  projectContext = {
+                    ...projectContext,
+                    effectiveProjectId: stickyProject,
+                  };
+                  pushDebug(`project-affinity: account=${account.index} project=${stickyProject}`);
+                }
+              } else if (projectContext.effectiveProjectId) {
+                sessionProjectAffinityByRefreshToken.set(affinityKey, projectContext.effectiveProjectId);
               }
             }
 
