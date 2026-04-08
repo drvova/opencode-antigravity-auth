@@ -89,6 +89,17 @@ function createDialogSelect(api: TuiApi, props: any): any {
   return api.ui.DialogSelect(props);
 }
 
+function openProviderConnect(api: TuiApi, message?: string): void {
+  if (message) {
+    api.ui.toast({
+      variant: "info",
+      message,
+    });
+  }
+  api.ui.dialog.clear();
+  api.command.trigger("provider.connect");
+}
+
 function showAccountActions(api: TuiApi, index: number): void {
   const options: TuiDialogSelectOption<string>[] = [
     {
@@ -147,11 +158,7 @@ function showAccountActions(api: TuiApi, index: number): void {
         }
 
         if (item.value.startsWith("verify:")) {
-          api.ui.toast({
-            variant: "info",
-            message: "Opening Antigravity account manager for verification...",
-          });
-          api.command.trigger("auth.login");
+          openProviderConnect(api, "Select Google → OAuth with Google (Antigravity), then choose Verify one account.");
           return;
         }
 
@@ -247,10 +254,16 @@ function buildOptions(storage: AccountStorageV4 | null): TuiDialogSelectOption<s
 function handleMainAction(api: TuiApi, value: string): void {
   switch (value) {
     case "action:add":
+      openProviderConnect(api, "Select Google → OAuth with Google (Antigravity), then choose Add account.");
+      break;
     case "action:quota":
+      openProviderConnect(api, "Select Google → OAuth with Google (Antigravity), then choose Check quotas.");
+      break;
     case "action:verify-all":
+      openProviderConnect(api, "Select Google → OAuth with Google (Antigravity), then choose Verify all accounts.");
+      break;
     case "action:configure-models":
-      api.command.trigger("auth.login");
+      openProviderConnect(api, "Select Google → OAuth with Google (Antigravity), then choose Configure models.");
       break;
     case "action:delete-all":
       clearAccounts()
