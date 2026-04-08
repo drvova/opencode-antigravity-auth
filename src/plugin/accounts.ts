@@ -984,36 +984,58 @@ export class AccountManager {
   }
 
   async saveToDisk(): Promise<void> {
+    const latest = await loadAccounts();
+    const byRefreshToken = new Map<string, ManagedAccount>();
+    for (const account of this.accounts) {
+      if (account.parts.refreshToken) {
+        byRefreshToken.set(account.parts.refreshToken, account);
+      }
+    }
+
+    const toMetadata = (account: ManagedAccount, fallback?: AccountMetadataV3): AccountMetadataV3 => ({
+      email: account.email ?? fallback?.email,
+      refreshToken: fallback?.refreshToken ?? account.parts.refreshToken,
+      projectId: account.parts.projectId ?? fallback?.projectId,
+      managedProjectId: account.parts.managedProjectId ?? fallback?.managedProjectId,
+      addedAt: fallback?.addedAt ?? account.addedAt,
+      lastUsed: Math.max(account.lastUsed, fallback?.lastUsed ?? 0),
+      enabled: account.enabled,
+      lastSwitchReason: account.lastSwitchReason,
+      rateLimitResetTimes: Object.keys(account.rateLimitResetTimes).length > 0 ? account.rateLimitResetTimes : undefined,
+      coolingDownUntil: account.coolingDownUntil,
+      cooldownReason: account.cooldownReason,
+      fingerprint: account.fingerprint,
+      fingerprintHistory: account.fingerprintHistory?.length ? account.fingerprintHistory : undefined,
+      cachedQuota: account.cachedQuota && Object.keys(account.cachedQuota).length > 0 ? account.cachedQuota : undefined,
+      cachedQuotaUpdatedAt: account.cachedQuotaUpdatedAt,
+      verificationRequired: account.verificationRequired,
+      verificationRequiredAt: account.verificationRequiredAt,
+      verificationRequiredReason: account.verificationRequiredReason,
+      verificationUrl: account.verificationUrl,
+    });
+
+    const mergedAccounts: AccountMetadataV3[] =
+      latest && latest.accounts.length > 0
+        ? latest.accounts.map((stored) => {
+            const match = byRefreshToken.get(stored.refreshToken);
+            return match ? toMetadata(match, stored) : stored;
+          })
+        : this.accounts.map((account) => toMetadata(account));
+
+    if (mergedAccounts.length === 0) {
+      return;
+    }
+
     const claudeIndex = Math.max(0, this.currentAccountIndexByFamily.claude);
     const geminiIndex = Math.max(0, this.currentAccountIndexByFamily.gemini);
-    
+
     const storage: AccountStorageV4 = {
       version: 4,
-      accounts: this.accounts.map((a) => ({
-        email: a.email,
-        refreshToken: a.parts.refreshToken,
-        projectId: a.parts.projectId,
-        managedProjectId: a.parts.managedProjectId,
-        addedAt: a.addedAt,
-        lastUsed: a.lastUsed,
-        enabled: a.enabled,
-        lastSwitchReason: a.lastSwitchReason,
-        rateLimitResetTimes: Object.keys(a.rateLimitResetTimes).length > 0 ? a.rateLimitResetTimes : undefined,
-        coolingDownUntil: a.coolingDownUntil,
-        cooldownReason: a.cooldownReason,
-        fingerprint: a.fingerprint,
-        fingerprintHistory: a.fingerprintHistory?.length ? a.fingerprintHistory : undefined,
-        cachedQuota: a.cachedQuota && Object.keys(a.cachedQuota).length > 0 ? a.cachedQuota : undefined,
-        cachedQuotaUpdatedAt: a.cachedQuotaUpdatedAt,
-        verificationRequired: a.verificationRequired,
-        verificationRequiredAt: a.verificationRequiredAt,
-        verificationRequiredReason: a.verificationRequiredReason,
-        verificationUrl: a.verificationUrl,
-      })),
-      activeIndex: claudeIndex,
+      accounts: mergedAccounts,
+      activeIndex: clampNonNegativeInt(claudeIndex, 0) % mergedAccounts.length,
       activeIndexByFamily: {
-        claude: claudeIndex,
-        gemini: geminiIndex,
+        claude: clampNonNegativeInt(claudeIndex, 0) % mergedAccounts.length,
+        gemini: clampNonNegativeInt(geminiIndex, 0) % mergedAccounts.length,
       },
     };
 
