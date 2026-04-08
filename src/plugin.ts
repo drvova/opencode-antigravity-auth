@@ -226,20 +226,14 @@ function isWSL2(): boolean {
 }
 
 function isRemoteEnvironment(): boolean {
-  if (process.env.SSH_CLIENT || process.env.SSH_TTY || process.env.SSH_CONNECTION) {
-    return true;
-  }
   if (process.env.REMOTE_CONTAINERS || process.env.CODESPACES) {
-    return true;
-  }
-  if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY && !isWSL()) {
     return true;
   }
   return false;
 }
 
 function shouldSkipLocalServer(): boolean {
-  return isWSL2() || isRemoteEnvironment();
+  return isRemoteEnvironment();
 }
 
 async function openBrowser(url: string): Promise<boolean> {
@@ -2994,41 +2988,37 @@ export const createAntigravityPlugin = (providerId: string) => async (
                 }
 
                 let listener: OAuthListener | null = null;
-                if (!isHeadless) {
-                  try {
-                    listener = await startOAuthListener();
-                  } catch {
-                    listener = null;
-                  }
+                try {
+                  listener = await startOAuthListener();
+                } catch {
+                  listener = null;
                 }
 
-                if (!isHeadless) {
-                  await openBrowser(authorization.url);
+                const browserOpened = await openBrowser(authorization.url);
+                if (!browserOpened) {
+                  console.log("\nCould not open browser automatically.");
+                  console.log("Open this URL on any device:\n");
+                  console.log(authorization.url + "\n");
                 }
 
                 if (listener) {
                   try {
-                    const SOFT_TIMEOUT_MS = 30000;
+                    const CALLBACK_TIMEOUT_MS = 180000;
                     const callbackPromise = listener.waitForCallback();
                     const timeoutPromise = new Promise<never>((_, reject) =>
-                      setTimeout(() => reject(new Error("SOFT_TIMEOUT")), SOFT_TIMEOUT_MS)
+                      setTimeout(() => reject(new Error("CALLBACK_TIMEOUT")), CALLBACK_TIMEOUT_MS)
                     );
 
                     let callbackUrl: URL;
                     try {
                       callbackUrl = await Promise.race([callbackPromise, timeoutPromise]);
                     } catch (err) {
-                      if (err instanceof Error && err.message === "SOFT_TIMEOUT") {
-                        console.log("\n⏳ Automatic callback not received after 30 seconds.");
-                        console.log("You can paste the redirect URL manually.\n");
-                        console.log("OAuth URL (in case you need it again):");
-                        console.log(authorization.url + "\n");
-                        
-                        try {
-                          await listener.close();
-                        } catch {}
-                        
-                        return promptManualOAuthInput(fallbackState);
+                      if (err instanceof Error && err.message === "CALLBACK_TIMEOUT") {
+                        return {
+                          type: "failed",
+                          error:
+                            "Automatic callback was not received within 180 seconds. Ensure your browser can reach http://localhost:51121/oauth-callback (WSL users: enable localhost forwarding), then retry.",
+                        };
                       }
                       throw err;
                     }
@@ -3057,7 +3047,11 @@ export const createAntigravityPlugin = (providerId: string) => async (
                   }
                 }
 
-                return promptManualOAuthInput(fallbackState);
+                return {
+                  type: "failed",
+                  error:
+                    "Could not start local OAuth callback listener on localhost:51121. Check port availability/networking and retry.",
+                };
               })();
 
               if (result.type === "failed") {
@@ -3183,26 +3177,20 @@ export const createAntigravityPlugin = (providerId: string) => async (
           const existingStorage = await loadAccounts();
           const existingCount = existingStorage?.accounts.length ?? 0;
 
-          const useManualFlow = isHeadless || shouldSkipLocalServer();
-
           let listener: OAuthListener | null = null;
-          if (!useManualFlow) {
-            try {
-              listener = await startOAuthListener();
-            } catch {
-              listener = null;
-            }
+          try {
+            listener = await startOAuthListener();
+          } catch {
+            listener = null;
           }
 
           const authorization = await authorizeAntigravity(projectId);
           const fallbackState = getStateFromAuthorizationUrl(authorization.url);
 
-          if (!useManualFlow) {
-            const browserOpened = await openBrowser(authorization.url);
-            if (!browserOpened) {
-              listener?.close().catch(() => {});
-              listener = null;
-            }
+          const browserOpened = await openBrowser(authorization.url);
+          if (!browserOpened) {
+            listener?.close().catch(() => {});
+            listener = null;
           }
 
           if (listener) {
