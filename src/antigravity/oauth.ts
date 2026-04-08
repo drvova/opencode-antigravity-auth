@@ -56,10 +56,37 @@ interface AntigravityTokenResponse {
   access_token: string;
   expires_in: number;
   refresh_token: string;
+  id_token?: string;
 }
 
 interface AntigravityUserInfo {
   email?: string;
+}
+
+function normalizeEmail(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const email = value.trim().toLowerCase();
+  if (!email) return undefined;
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return undefined;
+  return email;
+}
+
+function decodeBase64Url(value: string): string {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
+  return Buffer.from(padded, "base64").toString("utf8");
+}
+
+function extractEmailFromIdToken(idToken?: string): string | undefined {
+  if (!idToken) return undefined;
+  const parts = idToken.split(".");
+  if (parts.length < 2 || !parts[1]) return undefined;
+  try {
+    const payload = JSON.parse(decodeBase64Url(parts[1])) as Record<string, unknown>;
+    return normalizeEmail(payload.email);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -231,19 +258,24 @@ export async function exchangeAntigravity(
 
     const tokenPayload = (await tokenResponse.json()) as AntigravityTokenResponse;
 
-    const userInfoResponse = await fetch(
-      "https://www.googleapis.com/oauth2/v1/userinfo?alt=json",
-      {
-        headers: {
-          Authorization: `Bearer ${tokenPayload.access_token}`,
-          "User-Agent": GEMINI_CLI_HEADERS["User-Agent"],
-        },
-      },
-    );
+    let resolvedEmail = extractEmailFromIdToken(tokenPayload.id_token);
 
-    const userInfo = userInfoResponse.ok
-      ? ((await userInfoResponse.json()) as AntigravityUserInfo)
-      : {};
+    if (!resolvedEmail) {
+      const userInfoResponse = await fetch(
+        "https://www.googleapis.com/oauth2/v1/userinfo?alt=json",
+        {
+          headers: {
+            Authorization: `Bearer ${tokenPayload.access_token}`,
+            "User-Agent": GEMINI_CLI_HEADERS["User-Agent"],
+          },
+        },
+      );
+
+      if (userInfoResponse.ok) {
+        const userInfo = (await userInfoResponse.json()) as AntigravityUserInfo;
+        resolvedEmail = normalizeEmail(userInfo.email);
+      }
+    }
 
     const refreshToken = tokenPayload.refresh_token;
     if (!refreshToken) {
@@ -262,7 +294,7 @@ export async function exchangeAntigravity(
       refresh: storedRefresh,
       access: tokenPayload.access_token,
       expires: calculateTokenExpiry(startTime, tokenPayload.expires_in),
-      email: userInfo.email,
+      email: resolvedEmail,
       projectId: effectiveProjectId || "",
     };
   } catch (error) {

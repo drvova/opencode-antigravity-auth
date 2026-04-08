@@ -747,6 +747,14 @@ function clampInt(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.floor(value)));
 }
 
+function normalizeEmail(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const email = value.trim().toLowerCase();
+  if (!email) return undefined;
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return undefined;
+  return email;
+}
+
 async function persistAccountPool(
   results: Array<Extract<AntigravityTokenExchangeResult, { type: "success" }>>,
   replaceAll: boolean = false,
@@ -779,10 +787,11 @@ async function persistAccountPool(
     if (!parts.refreshToken) {
       continue;
     }
+    const normalizedEmail = normalizeEmail(result.email);
 
     // First, check for existing account by email (prevents duplicates when refresh token changes)
     // Only use email-based deduplication if the new account has an email
-    const existingByEmail = result.email ? indexByEmail.get(result.email) : undefined;
+    const existingByEmail = normalizedEmail ? indexByEmail.get(normalizedEmail) : undefined;
     const existingByToken = indexByRefreshToken.get(parts.refreshToken);
     
     // Prefer email-based match to handle refresh token rotation
@@ -792,11 +801,11 @@ async function persistAccountPool(
       // New account - add it
       const newIndex = accounts.length;
       indexByRefreshToken.set(parts.refreshToken, newIndex);
-      if (result.email) {
-        indexByEmail.set(result.email, newIndex);
+      if (normalizedEmail) {
+        indexByEmail.set(normalizedEmail, newIndex);
       }
       accounts.push({
-        email: result.email,
+        email: normalizedEmail,
         refreshToken: parts.refreshToken,
         projectId: parts.projectId,
         managedProjectId: parts.managedProjectId,
@@ -817,7 +826,7 @@ async function persistAccountPool(
     const oldToken = existing.refreshToken;
     accounts[existingIndex] = {
       ...existing,
-      email: result.email ?? existing.email,
+      email: normalizedEmail ?? existing.email,
       refreshToken: parts.refreshToken,
       projectId: parts.projectId ?? existing.projectId,
       managedProjectId: parts.managedProjectId ?? existing.managedProjectId,
@@ -3090,9 +3099,10 @@ export const createAntigravityPlugin = (providerId: string) => async (
               accounts.push(result);
 
               try {
+                const toastEmail = normalizeEmail(result.email);
                 await client.tui.showToast({
                   body: {
-                    message: `Account ${accounts.length} authenticated${result.email ? ` (${result.email})` : ""}`,
+                    message: `Account ${accounts.length} authenticated${toastEmail ? ` (${toastEmail})` : ""}`,
                     variant: "success",
                   },
                 });
@@ -3106,8 +3116,8 @@ export const createAntigravityPlugin = (providerId: string) => async (
                     const updatedAccounts = [...currentStorage.accounts];
                     const parts = parseRefreshParts(result.refresh);
                     if (parts.refreshToken) {
-                      updatedAccounts[refreshAccountIndex] = {
-                        email: result.email ?? updatedAccounts[refreshAccountIndex]?.email,
+                        updatedAccounts[refreshAccountIndex] = {
+                        email: normalizeEmail(result.email) ?? updatedAccounts[refreshAccountIndex]?.email,
                         refreshToken: parts.refreshToken,
                         projectId: parts.projectId ?? updatedAccounts[refreshAccountIndex]?.projectId,
                         managedProjectId: parts.managedProjectId ?? updatedAccounts[refreshAccountIndex]?.managedProjectId,
@@ -3250,9 +3260,10 @@ export const createAntigravityPlugin = (providerId: string) => async (
                     }
 
                     const newTotal = existingCount + 1;
+                    const toastEmail = normalizeEmail(result.email);
                     const toastMessage = existingCount > 0
-                      ? `Added account${result.email ? ` (${result.email})` : ""} - ${newTotal} total`
-                      : `Authenticated${result.email ? ` (${result.email})` : ""}`;
+                      ? `Added account${toastEmail ? ` (${toastEmail})` : ""} - ${newTotal} total`
+                      : `Authenticated${toastEmail ? ` (${toastEmail})` : ""}`;
 
                     try {
                       await client.tui.showToast({
@@ -3303,9 +3314,10 @@ export const createAntigravityPlugin = (providerId: string) => async (
 
                 // Show appropriate toast message
                 const newTotal = existingCount + 1;
+                const toastEmail = normalizeEmail(result.email);
                 const toastMessage = existingCount > 0
-                  ? `Added account${result.email ? ` (${result.email})` : ""} - ${newTotal} total`
-                  : `Authenticated${result.email ? ` (${result.email})` : ""}`;
+                  ? `Added account${toastEmail ? ` (${toastEmail})` : ""} - ${newTotal} total`
+                  : `Authenticated${toastEmail ? ` (${toastEmail})` : ""}`;
 
                 try {
                   await client.tui.showToast({
